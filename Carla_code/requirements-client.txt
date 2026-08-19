@@ -1,0 +1,6 @@
+# Python packages imported by the local CARLA-Air/AirSim controller.
+# The CARLA and AirSim Python APIs are supplied by the simulator installation
+# and are not replaced by this file.
+numpy
+requests
+opencv-python

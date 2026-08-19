@@ -1,0 +1,9 @@
+# Qwen2.5-VL + LoRA HTTP inference service.
+# Match torch/transformers versions to the installed Qwen2.5-VL environment.
+torch
+transformers
+peft==0.10.0
+qwen-vl-utils
+fastapi
+uvicorn
+pillow

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+outputs/
+data/find_track_data/
+Data/decision_runs/
+*.log
+.env
