@@ -17,11 +17,13 @@ from .utils import clamp, distance2, heading_to_unit
 Vec3 = Tuple[float, float, float]
 
 
-def _waypoint_dict(waypoint, branch_id: str, confidence: float, reason: str) -> Dict[str, Any]:
+def _waypoint_dict(
+    waypoint, branch_id: str, confidence: float, reason: str, config: RecoverVLAConfig
+) -> Dict[str, Any]:
     loc = waypoint.transform.location
     return {
         "branch_id": branch_id,
-        "position": carla_location_to_airsim_ned(loc),
+        "position": carla_location_to_airsim_ned(loc, config),
         "heading": float(waypoint.transform.rotation.yaw),
         "lane_width": float(getattr(waypoint, "lane_width", 3.5)),
         "is_junction": bool(getattr(waypoint, "is_junction", False)),
@@ -64,7 +66,7 @@ def road_branch_candidates(
         ]
 
     try:
-        x, y, z = airsim_ned_to_carla_location(center_ned)
+        x, y, z = airsim_ned_to_carla_location(center_ned, config)
         loc = carla_module.Location(x, y, z)
         root = world.get_map().get_waypoint(loc, project_to_road=True, lane_type=carla_module.LaneType.Driving)
     except Exception:
@@ -82,7 +84,7 @@ def road_branch_candidates(
             if key in seen:
                 continue
             seen.add(key)
-            candidate = _waypoint_dict(waypoint, branch_id, conf, reason)
+            candidate = _waypoint_dict(waypoint, branch_id, conf, reason, config)
             branches.append(candidate)
             try:
                 nxt = waypoint.next(config.road_branch_distance_m)
@@ -132,7 +134,7 @@ def building_safety_context(
         return {"available": True, "risk": "low", "nearest_distance_m": None, "recommended_altitude_m": config.safe_search_altitude_m}
 
     probe = waypoint or drone_position
-    px, py, pz = airsim_ned_to_carla_location(probe)
+    px, py, pz = airsim_ned_to_carla_location(probe, config)
     nearest_distance = float("inf")
     nearest_height = 0.0
     for box in boxes:

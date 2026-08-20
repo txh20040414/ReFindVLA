@@ -88,7 +88,7 @@ class SemanticWaypointPlanner:
     ):
         ref_pos = target.position if target else belief.center
         ref_heading = target.heading if target else belief.heading
-        road = get_drivable_anchor(world, carla_module, ref_pos) if world is not None and carla_module is not None else {
+        road = get_drivable_anchor(world, carla_module, ref_pos, self.config) if world is not None and carla_module is not None else {
             "position": ref_pos,
             "heading": ref_heading,
             "lane_width": 3.5,

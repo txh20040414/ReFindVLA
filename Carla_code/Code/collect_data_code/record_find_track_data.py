@@ -58,6 +58,9 @@ try:
         project_target_bbox_to_image as _project_target_bbox_to_image,
         spawn_background_traffic as _spawn_background_traffic,
         spawn_target_vehicle as _spawn_target_vehicle,
+        airsim_ned_to_carla_location as _shared_airsim_ned_to_carla_location,
+        carla_location_to_airsim_ned as _shared_carla_location_to_airsim_ned,
+        _add_carla_python_paths,
     )
     from main_interactive_track.utils import parse_instruction
 except ImportError as exc:
@@ -71,7 +74,7 @@ def get_drone_state(airsim_client, _airsim_module=None) -> Dict[str, Any]:
 
 def get_target_vehicle_state(target_vehicle) -> Dict[str, Any]:
     """Return the new runtime target state as a serializable dictionary."""
-    return _get_target_state(target_vehicle).to_dict()
+    return _get_target_state(target_vehicle, CONFIG).to_dict()
 
 
 def project_target_bbox_to_image(airsim_client, _airsim_module, target_vehicle) -> Dict[str, Any]:
@@ -115,7 +118,7 @@ def spawn_target_vehicle(world, carla_module, *, color=None, vehicle_type="sedan
     return world.try_spawn_actor(vehicle_bp, spawn_location)
 
 
-def spawn_background_traffic(world, carla_module, *, traffic_count=10, start_index=10):
+def spawn_background_traffic(world, carla_module, *, traffic_count=8, start_index=10, allow_unsafe=False):
     """Delegate background traffic generation to the shared runtime adapter."""
     config = CONFIG
     # The shared adapter reads these values from the immutable config. Build a
@@ -124,7 +127,12 @@ def spawn_background_traffic(world, carla_module, *, traffic_count=10, start_ind
     return _spawn_background_traffic(
         world,
         carla_module,
-        replace(config, background_traffic=int(traffic_count), traffic_spawn_start_index=int(start_index)),
+        replace(
+            config,
+            background_traffic=int(traffic_count),
+            traffic_spawn_start_index=int(start_index),
+            allow_unsafe_traffic=bool(allow_unsafe),
+        ),
     )
 
 
@@ -171,9 +179,7 @@ def _connect_carla_local(host: str, port: int):
             "",
         )
         if _carla_root:
-            _carla_api = os.path.join(_carla_root, "PythonAPI")
-            if _carla_api not in sys.path:
-                sys.path.insert(0, _carla_api)
+            _add_carla_python_paths(_carla_root)
         import carla
 
         client = carla.Client(host, port)
@@ -195,7 +201,10 @@ def _connect_airsim_local(host: str, port: int, takeoff_altitude: float):
     client.armDisarm(True)
     client.takeoffAsync().join()
     client.moveToZAsync(takeoff_altitude, 3).join()
-    _set_collection_view(client, airsim, "forward")
+    if os.environ.get("RECOVER_CAMERA_CONTROL", "0").lower() in {"1", "true", "yes", "on"}:
+        _set_collection_view(client, airsim, "forward")
+    else:
+        print("  相机: 使用 AirSim settings.json 静态配置（未调用动态相机 API）")
     print(f"  🛫 无人机起飞 → {abs(takeoff_altitude):.1f}m")
     print("  ✅ 无人机就绪!")
     return client
@@ -240,16 +249,14 @@ def _set_collection_view(airsim_client, airsim_module, view_name: str) -> None:
     pitch = pitch_map.get(view_name, -70.0)
     fov = fov_map.get(view_name, 85.0)
     try:
-        pose = airsim_module.Pose(
-            airsim_module.Vector3r(0, 0, 0),
-            airsim_module.to_quaternion(
-                math.radians(pitch),
-                0.0,
-                0.0,
-            ),
-        )
-        airsim_client.simSetCameraPose("0", pose)
-        airsim_client.simSetCameraFov("0", fov)
+        setter = getattr(airsim_client, "simSetCameraOrientation", None)
+        if setter is None:
+            print("  ⚠️ 当前 AirSim 客户端没有 simSetCameraOrientation；保持静态相机")
+            return
+        setter("0", airsim_module.to_quaternion(math.radians(pitch), 0.0, 0.0))
+        fov_setter = getattr(airsim_client, "simSetCameraFov", None)
+        if fov_setter is not None:
+            fov_setter("0", fov)
     except Exception as e:
         print(f"  ⚠️ 无法设置采集相机视角: {e}")
 
@@ -278,17 +285,12 @@ def _annotate_standard_preview(image_np: np.ndarray, bbox: Optional[List[int]], 
 
 def _airsim_ned_to_carla_location(airsim_pos: Tuple[float, float, float]) -> Tuple[float, float, float]:
     """Convert AirSim NED coordinates back to CARLA world coordinates."""
-    x, y, z = airsim_pos
-    return (x - 172.20, y + 183.86, 27.45 - z)
+    return _shared_airsim_ned_to_carla_location(airsim_pos, CONFIG)
 
 
 def _carla_location_to_airsim_ned_tuple(location) -> Tuple[float, float, float]:
     """Convert a CARLA location into AirSim NED coordinates."""
-    return (
-        location.x + 172.20,
-        location.y - 183.86,
-        -location.z + 27.45,
-    )
+    return _shared_carla_location_to_airsim_ned(location, CONFIG)
 
 
 def _get_drivable_anchor(world, carla_module, airsim_pos: Tuple[float, float, float]) -> Dict[str, Any]:
@@ -788,7 +790,12 @@ def main() -> None:
     parser.add_argument("--edge-margin", type=int, default=8)
     parser.add_argument("--keep-edge-frames", action="store_true")
     parser.add_argument("--prediction-horizon", type=float, default=3.0)
-    parser.add_argument("--traffic", type=int, default=10)
+    parser.add_argument("--traffic", type=int, default=8)
+    parser.add_argument(
+        "--allow-unsafe-traffic",
+        action="store_true",
+        help="Allow more than eight autopilot vehicles; only use for explicitly documented legacy batches.",
+    )
     parser.add_argument("--target-spawn-index", type=int, default=-1)
     parser.add_argument("--traffic-start-index", type=int, default=10)
     parser.add_argument("--weather-mode", type=str, default="cycle", choices=["cycle", "fixed", "off"])
@@ -835,6 +842,7 @@ def main() -> None:
         "label_format": "yolo_normalized",
         "target_spawn_index": args.target_spawn_index,
         "traffic_start_index": args.traffic_start_index,
+        "allow_unsafe_traffic": args.allow_unsafe_traffic,
         "output_root": str(output_root),
         "run_root": str(run_root),
         "started_at": datetime.now().isoformat(),
@@ -901,6 +909,7 @@ def main() -> None:
             carla_module,
             traffic_count=args.traffic,
             start_index=args.traffic_start_index,
+            allow_unsafe=args.allow_unsafe_traffic,
         )
         target_label = _target_label_text(target_color, target_vehicle_type)
 

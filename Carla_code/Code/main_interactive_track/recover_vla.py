@@ -71,6 +71,17 @@ class RecoverVLARunner:
             appearance=f"{(target_query or {}).get('color') or ''} {(target_query or {}).get('vehicle_type') or ''}".strip(),
         )
         logger = RunLogger(self.config.log_dir)
+        logger.write_metadata(
+            {
+                "schema_version": 1,
+                "strategy": "remote_vla" if self.config.use_remote_vla else "no_vla_rule_fallback",
+                "instruction": instruction,
+                "target_query": target_query or {},
+                "config": self.config,
+                "note": "Target visibility is obtained from CARLA projection for episode-level evaluation; it is not a model input feature.",
+            }
+        )
+        episode_start_time = time.time()
         executor = ThreadPoolExecutor(max_workers=1)
         pending: Optional[Future] = None
         pending_meta: Dict[str, Any] = {}
@@ -80,6 +91,13 @@ class RecoverVLARunner:
         frame_idx = 0
         previous_state: Optional[TargetState] = None
         last_state: Optional[TargetState] = None
+        previous_drone_position = None
+        path_length_m = 0.0
+        collision_detected = False
+        succeeded = False
+        first_success_time_s: Optional[float] = None
+        remote_error_count = 0
+        control_count = 0
 
         policy_name = "remote Qwen VLA" if self.config.use_remote_vla else "local rule fallback (no VLA)"
         print(f"  RecoverVLA 启动: Target Memory + Belief Search + Candidate Verification + {policy_name}")
@@ -89,8 +107,15 @@ class RecoverVLARunner:
             for loop_idx in range(self.config.max_steps):
                 now = time.time()
                 drone = get_drone_state(airsim_client)
+                if previous_drone_position is not None:
+                    dx = drone.position[0] - previous_drone_position[0]
+                    dy = drone.position[1] - previous_drone_position[1]
+                    dz = drone.position[2] - previous_drone_position[2]
+                    path_length_m += (dx * dx + dy * dy + dz * dz) ** 0.5
+                previous_drone_position = drone.position
                 collision = get_collision_info(airsim_client)
                 if collision is not None and getattr(collision, "has_collided", False):
+                    collision_detected = True
                     print("  检测到碰撞，进入 return_home 兜底")
                     next_decision_t = now
 
@@ -111,7 +136,7 @@ class RecoverVLARunner:
                 belief_region = self.belief.build(memory, predicted, now, env_context)
 
                 bbox_meta, visible_candidates = observe_vehicle_candidates(world, airsim_client, target_actor, self.config)
-                observed = visible_target_observation(target_actor, bbox_meta)
+                observed = visible_target_observation(target_actor, bbox_meta, self.config)
                 local_candidate = self.decision_engine.verifier.score(bbox_meta, observed, memory, belief_region, visible_candidates)
                 memory_updated = update_target_memory(
                     memory,
@@ -146,6 +171,8 @@ class RecoverVLARunner:
                 if pending is not None and pending.done():
                     result = pending.result()
                     self.last_latency_ms = float(result.get("latency_ms") or 0.0)
+                    if result.get("error"):
+                        remote_error_count += 1
                     meta = pending_meta
                     pending = None
                     pending_meta = {}
@@ -247,8 +274,12 @@ class RecoverVLARunner:
                     candidate_list=visible_candidates,
                     environment=env_context,
                 )
+                if plan.target_found and observed is not None and not succeeded:
+                    succeeded = True
+                    first_success_time_s = time.time() - episode_start_time
                 duration = min(max(self.config.control_dt, plan.hold_seconds), self.config.decision_interval)
                 action = self.controller.action(drone, plan, duration)
+                control_count += 1
                 logger.write(
                     {
                         "type": "control",
@@ -302,6 +333,21 @@ class RecoverVLARunner:
             except Exception:
                 pass
             executor.shutdown(wait=False, cancel_futures=True)
+            logger.write(
+                {
+                    "type": "episode_summary",
+                    "strategy": "remote_vla" if self.config.use_remote_vla else "no_vla_rule_fallback",
+                    "success": succeeded,
+                    "time_to_reacquisition_s": first_success_time_s,
+                    "episode_duration_s": time.time() - episode_start_time,
+                    "path_length_m": path_length_m,
+                    "collision": collision_detected,
+                    "decision_count": decision_idx,
+                    "control_count": control_count,
+                    "remote_error_count": remote_error_count,
+                    "max_steps": self.config.max_steps,
+                }
+            )
             logger.close()
             print(f"  Episode 结束，共 {decision_idx} 次远程高层决策")
 

@@ -135,7 +135,7 @@ def predict(req: PredictRequest):
         img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
         timing["decode_ms"] = (time.perf_counter() - t_decode) * 1000
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"鍥惧儚瑙ｇ爜澶辫触: {e}")
+        raise HTTPException(status_code=400, detail=f"image_decode_failed: {e}")
 
     tmp_path = None
     try:
