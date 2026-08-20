@@ -7,7 +7,7 @@
 | 审稿疑问 | 当前代码证据 | 论文/Response 处理 | 状态 |
 |---|---|---|---|
 | ReFindVLA 是否输出无人机底层动作？ | `Code/model_server.py` 的 `/predict` 返回 `phase/view/target_found/confidence/...`；`decision.py` 生成语义航点，`controller.py` 才生成底层控制量 | 明确称为基于 VL 模型的高层规划器，不声称是端到端底层 VLA 控制器 | documented |
-| VLA 的实际贡献能否隔离？ | `config.py` 提供 `RECOVER_USE_REMOTE_VLA`；`recover_vla.py` 在关闭时不调用远程服务 | 在相同 manifest 下新增 E1/E2 成对实验，比较 RSR、TTR、路径、耗时和碰撞 | pending |
+| VLA 的实际贡献能否隔离？ | `config.py` 提供 `RECOVER_USE_REMOTE_VLA`；`recover_vla.py` 在关闭时不调用远程服务；`tools/aggregate_experiment_runs.py` 按 run 汇总 | 在相同 manifest 下新增 E1/E2 成对实验，比较 RSR、TTR、路径、耗时和碰撞 | pending |
 | no-VLA 是否仍保留其他模块？ | `decision.py` 的 local fallback 仍经过 belief、candidate verifier、waypoint planner | 在实验手册中固定 E2 运行方式，禁止将其描述为删除整个系统 | documented/pending |
 
 ## 2. 可复现模型与候选验证
@@ -19,6 +19,7 @@
 | 候选分数是否真实实现？ | `candidate_verification.py` 明确实现权重 `0.35/0.25/0.20/0.10/0.10`、阈值 `0.72`、间隔 `0.06` | 说明这些是工程先验，不是学习得到或验证集校准得到；`reid=0.50` 是占位中性分 | documented |
 | 是否存在真实 ReID 网络？ | 当前代码没有独立 ReID 模型；颜色只是弱先验，`reid` 固定为 `0.50` | 不得声称使用了 learned ReID；真实 ReID 留作后续工作 | documented |
 | P_obs/P_unv 是否在当前代码启用？ | 当前清理代码的 belief 分支只使用已实现的运动、方向和路网先验；未启用的因素不能画成运行模块 | 删除或标注未实现组件，避免架构图与代码不一致 | documented |
+| Windows CARLA-Air 是否会被相机 API 或坐标偏移误导？ | `simulator.py` 默认不调用 `simSetCameraPose`；坐标偏移由环境变量配置并写入 `run_config.json` | 按 Windows Shipping 约束运行静态相机；换地图/PlayerStart 必须重新校准偏移 | documented |
 
 ## 3. 数据、场景和统计
 

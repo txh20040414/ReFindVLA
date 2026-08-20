@@ -1,215 +1,162 @@
-# ReFindVLA Linux + GPU + CARLA-Air 实验手册
+# Windows CARLA-Air + Linux GPU Qwen 实验手册
 
-本手册对应当前仓库中的代码版本。它把运行过程分成三个部分：
+本手册对应当前仓库的真实代码链：CARLA-Air/AirSim 在本地 Windows 运行，`main_interactive_track` 也在本地运行；Qwen2.5-VL-7B-Instruct + ReFindVLA LoRA 在远程 Linux GPU 运行，通过 HTTP `/predict` 传输图像和文本上下文。
 
 ```text
-CARLA-Air/AirSim 仿真器
-        ↓ 本地图像、状态和候选观测
-Carla_code/Code/main_interactive_track
-        ↓ HTTP /predict
-Linux GPU 上的 Qwen2.5-VL-7B + ReFindVLA LoRA 服务
-        ↓ phase/view/confidence 等高层 JSON
-本地语义航点规划器 + 安全控制器
-        ↓ AirSim body-frame velocity/yaw 控制
-无人机在 CARLA-Air 中执行搜索、检查和找回
+Windows 本地: CARLA-Air + CARLA 2000 + AirSim 41451 + main_interactive_track
+                                      │ HTTP POST /predict
+                                      ▼
+Linux GPU: Code/model_server.py:8000 + Qwen2.5-VL-7B + models_/mode_v2
 ```
 
-Qwen 服务输出的是高层结构化决策，不直接输出无人机底层速度。底层 `vx/vy/vz/yaw_rate` 只在本地控制器内部生成和执行。
+Qwen 输出高层 JSON（`phase/view/target_found/confidence/hold_seconds/reason`），不输出 `vx/vy/vz/yaw_rate`。低层速度和偏航控制只由本地 `decision.py`、`controller.py` 和 AirSim `moveByVelocityBodyFrameAsync` 执行。
 
-## 1. 仓库和外部组件
+## 1. 官方 CARLA-Air 接口约束
 
-本仓库只提交 ReFindVLA 的控制代码、模型服务代码、LoRA adapter 文件（如果选择提交）和实验说明，不提交完整 CARLA-Air 可执行程序，也不提交 Qwen 基座模型。
+官方资料：[Quick-Start Guide](https://github.com/louiszengCN/CarlaAir/blob/main/CarlaAir_Release/guide/Quick-Start.md)、[Coordinate Systems](https://github.com/louiszengCN/CarlaAir/blob/main/CarlaAir_Release/guide/COORDINATE_SYSTEMS.md)、[Windows release](https://github.com/louiszengCN/CarlaAir/releases)。官方端口为 CARLA `2000`、AirSim `41451`。Windows 使用官方 Windows v0.1.7 二进制包，不要在 Windows 上执行 Linux 的 `./CarlaAir.sh`。
 
-当前本地资料中使用的基础组件为：
+官方 FAQ 对本实验有两个关键限制：
 
-- CARLA-Air v0.1.7；
-- CARLA 0.9.16 Python API；
-- AirSim 1.8.1 Python API；
-- Qwen2.5-VL-7B-Instruct；
-- PEFT 0.10.0；
-- LoRA adapter 配置：`r=8`、`alpha=16`、`dropout=0.05`、目标层 `q_proj/k_proj/v_proj/o_proj`、`task_type=CAUSAL_LM`。
+1. Shipping 构建中 `simSetCameraPose` 可能触发 C++ abort；当前代码默认 `RECOVER_CAMERA_CONTROL=0`，使用 `%USERPROFILE%\Documents\AirSim\settings.json` 的静态相机。
+2. 无人机和高密度交通同时运行时，官方建议自动驾驶车辆不超过 8 辆；当前在线代码默认 8 辆。复现旧的 10 辆批次时，必须显式设置 `RECOVER_ALLOW_UNSAFE_TRAFFIC=1` 并记录。
 
-CARLA-Air 的可执行程序和 Python API 需要队员根据其许可证和官方发布方式单独安装。当前代码通过 `CARLA_AIR_ROOT` 或已经安装好的 `carla` Python 包连接它。
+## 2. Windows 本地仿真器与控制端
 
-## 2. Linux GPU 机器：安装 Qwen 推理服务
+按官方 release 下载并启动 Windows v0.1.7，在 `%USERPROFILE%\Documents\AirSim\settings.json` 配置相机、无人机和端口。当前代码默认不调用动态相机 API。
 
-在 Linux GPU 机器上创建独立环境：
+```powershell
+cd C:\path\to\ReFindVLA\Carla_code
+py -3 -m venv .venv-client
+.\.venv-client\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-client.txt
+```
+
+```powershell
+$env:CARLA_AIR_ROOT = 'C:\path\to\CarlaAir-v0.1.7-win11-x86_64'
+$env:CARLA_HOST = '127.0.0.1'
+$env:CARLA_PORT = '2000'
+$env:AIRSIM_HOST = '127.0.0.1'
+$env:SERVER_URL = 'http://GPU_SERVER_IP:8000'
+$env:TRACKING_LOG_DIR = 'C:\path\to\outputs\decision_runs'
+$env:RECOVER_CAMERA_CONTROL = '0'
+$env:RECOVER_USE_REMOTE_VLA = '1'
+$env:RECOVER_REMOTE_REQUIRED = '1'
+```
+
+`CARLA_AIR_ROOT` 可指向解压根目录；当前代码会检查 `PythonAPI`、`PythonAPI\carla` 和 `PythonAPI\carla\dist\*.egg`。默认坐标偏移是 Town10HD 的测量值：`X=172.20, Y=-183.86, Z=27.45`。它们不是跨地图常数；切换地图或 PlayerStart 时，按官方坐标文档重新校准，并设置 `CARLA_AIR_OFFSET_X/Y/Z` 与 `CARLA_AIR_OFFSET_SOURCE`。
+
+预检和启动：
+
+```powershell
+cd C:\path\to\ReFindVLA\Carla_code
+python Code\tools\validate_experiment_setup.py --server-url $env:SERVER_URL
+cd Code
+python -m main_interactive_track.main
+```
+
+输入例如：
+
+```text
+spawn 白色 卡车
+找回失踪的白色卡车，它最后向东行驶
+quit
+```
+
+`spawn` 创建目标车；当前入口是交互式单集入口，不会自动重置 CARLA 场景，也不会自动生成 E1/E2 成对 manifest。
+
+## 3. 远程 Linux GPU Qwen 服务
 
 ```bash
-cd /path/to/ReFindVLA/Carla_code
+cd /data/ReFindVLA/Carla_code
 python3 -m venv .venv-server
 source .venv-server/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements-server.txt
-```
-
-Qwen 基座模型不放入仓库。将 `Qwen2.5-VL-7B-Instruct` 放到队员自己的模型目录，并设置环境变量。例如，本地训练记录中使用过：
-
-```bash
 export QWEN_BASE_MODEL=/data/models/qwen/Qwen2.5-VL-7B-Instruct
-```
-
-如果仓库中包含 `models_/mode_v2/`，它是 LoRA adapter；也可以通过环境变量指定其他已验证的 adapter：
-
-```bash
-export REFINDVLA_LORA_PATH=/path/to/ReFindVLA/Carla_code/models_/mode_v2
-```
-
-启动 HTTP 服务：
-
-```bash
-cd /path/to/ReFindVLA/Carla_code/Code
+export REFINDVLA_LORA_PATH=/data/ReFindVLA/Carla_code/models_/mode_v2
+test -f "$QWEN_BASE_MODEL/config.json"
+test -f "$REFINDVLA_LORA_PATH/adapter_config.json"
+cd /data/ReFindVLA/Carla_code/Code
 python3 model_server.py
 ```
 
-服务默认监听 `0.0.0.0:8000`。另开终端检查：
-
 ```bash
 curl http://127.0.0.1:8000/health
+nvidia-smi
 ```
 
-健康检查应返回模型名、设备、基座模型路径和 LoRA 路径。若控制端和 GPU 服务器不是同一台机器，应在控制端使用 GPU 服务器的局域网地址，例如：
+服务绑定 `0.0.0.0:8000`；只允许 Windows 控制机访问，不要把无认证服务暴露到公网。若远程目录没有 `Code/model_server.py`，说明是旧版仓库或错误分支：
 
 ```bash
-export SERVER_URL=http://GPU_SERVER_IP:8000
+cd /data/ReFindVLA
+git fetch origin
+git checkout experiment-design
+git pull --ff-only origin experiment-design
+ls -lh Carla_code/Code/model_server.py
 ```
 
-不要把 Qwen 权重、服务器密码或访问令牌提交到 GitHub。
+## 4. 返修实验开关和实际状态
 
-## 3. Linux 控制端：安装本地依赖
+### E0：smoke test
 
-在运行 CARLA-Air/AirSim 的机器上：
+只验证 CARLA、AirSim、HTTP `/health`、HTTP `/predict`、控制动作和日志生成；不进入论文统计。
 
-```bash
-cd /path/to/ReFindVLA/Carla_code
-python3 -m venv .venv-client
-source .venv-client/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements-client.txt
+### E1：完整远程 VLA
+
+```powershell
+$env:RECOVER_USE_REMOTE_VLA = '1'
+$env:RECOVER_REMOTE_REQUIRED = '1'
+python -m main_interactive_track.main
 ```
 
-如果 `carla` 没有安装到当前 Python 环境，设置 CARLA-Air 的安装目录。目录下需要有 `PythonAPI/`：
+已实现：远程 Qwen 请求、结构化决策解析、候选验证、Target Memory、Belief Map、道路上下文、语义航点和本地 AirSim 控制。
 
-```bash
-export CARLA_AIR_ROOT=/path/to/CarlaAir-v0.1.7
+### E2：严格 no-VLA 对照
+
+```powershell
+$env:RECOVER_USE_REMOTE_VLA = '0'
+$env:RECOVER_REMOTE_REQUIRED = '0'
+python -m main_interactive_track.main
 ```
 
-如果队员已经把 `carla` Python API 安装到环境中，可以不设置这个变量。AirSim Python API 也必须在当前环境中可导入。
+已实现：保留相同的记忆、信念图、候选校验、航点规划器和安全控制器，只跳过远程 Qwen，由本地规则 fallback 生成高层计划。没有同一场景 manifest 的成批运行前，不能写成论文结果。
 
-## 4. 启动仿真器
+### E3/E4：A* 和螺旋搜索
 
-先启动 CARLA-Air，再启动控制代码。当前本地 CARLA-Air README 中的 Linux 启动形式为：
+当前 `Carla_code` 没有可核验的独立 A* 或螺旋搜索运行入口，尚未完整实现。若队员提供真实基线代码，必须接入相同 manifest、控制器、终止条件和日志格式后再运行。
 
-```bash
-cd /path/to/CarlaAir-v0.1.7
-./CarlaAir.sh Town10HD
+## 5. 日志和汇总
+
+每次在线 episode 会创建 `TRACKING_LOG_DIR/recover_YYYYMMDD_HHMMSS/`，包含 `run_config.json`、`decision.jsonl` 和 `frames/`。配置文件保存策略、阈值、坐标偏移来源、相机模式和环境配置；JSONL 自动写入时间戳、决策、控制、延迟、候选和 `episode_summary`。成功标签是“高层计划确认且 CARLA 投影目标同时可见”，这是离线评测 oracle，不是模型输入。
+
+```powershell
+python Code\tools\aggregate_experiment_runs.py `
+  --input C:\path\to\outputs\decision_runs `
+  --output C:\path\to\outputs\summary_E1 `
+  --label E1
 ```
 
-确认 CARLA 服务监听 `2000`，AirSim 服务监听 `41451`。本实验当前代码和已有数据记录以 Town10HD 为依据；不要在没有重新采集和评估的情况下把 Town3/Town5 写成已验证结果。
+输出 `summary.csv` 和 `summary.json`；RSR 分母是 `decision.jsonl` 文件数（episode/run 数），不是控制循环数或 Qwen 请求数。
 
-## 5. 启动在线 ReFindVLA 控制
+## 6. 目前不能直接声称完成的部分
 
-在控制端设置服务地址和日志目录：
+本次代码修正确保运行安全和证据记录，但以下内容仍需真实仿真补齐：
 
-```bash
-cd /path/to/ReFindVLA/Carla_code
-source .venv-client/bin/activate
-export CARLA_AIR_ROOT=/path/to/CarlaAir-v0.1.7
-export SERVER_URL=http://GPU_SERVER_IP:8000
-export TRACKING_LOG_DIR=/path/to/outputs/decision_runs
-export RECOVER_USE_REMOTE_VLA=1
-```
+1. E1/E2 使用同一场景、同一初始状态和同一目标丢失触发条件的成对批次；当前交互入口没有自动 reset 和 loss/occlusion manifest。
+2. 论文所需 RSR、TTR、路径长度、耗时、碰撞和误确认率；代码有原始日志和汇总器，但没有替用户捏造结果。
+3. A*、螺旋搜索独立基线；当前仓库没有这两条可运行实现。
+4. 多基座模型、真机实验和大规模外部学习基线；仍属于论文限制和未来工作。
 
-启动：
+## 7. 数据采集入口
 
-```bash
-cd /path/to/ReFindVLA/Carla_code/Code
-python3 -m main_interactive_track.main
-```
+采集脚本不调用 Qwen，只保存 CARLA 投影框、状态、图像和场景元数据：
 
-程序会：
-
-1. 检查远程 Qwen 服务；
-2. 连接 CARLA-Air 和 AirSim；
-3. 交互式读取目标指令；
-4. 根据指令生成目标车和背景交通；
-5. 在目标丢失后维护 Target Memory、Belief Map 和道路上下文；
-6. 向 Qwen 请求高层 `phase/view/...` 决策；
-7. 由本地航点规划器和安全控制器执行；
-8. 将 `decision.jsonl`、控制帧和 sidecar 写入日志目录。
-
-可使用的指令形式包括：
-
-```text
-找回失踪的白色厢式卡车，它最后向东行驶
-spawn 白色 卡车
-quit
-```
-
-## 6. 无 VLA 对照模式
-
-当前代码提供一个不调用远程 VLA 的本地规则模式，用于保持其他模块不变时隔离 VLA 决策模块：
-
-```bash
-export RECOVER_USE_REMOTE_VLA=0
-export RECOVER_REMOTE_REQUIRED=0
-python3 -m main_interactive_track.main
-```
-
-此模式仍保留目标记忆、Belief Map、候选验证、航点规划和安全控制，只跳过 Qwen 远程请求。它是用于新增消融实验的代码开关，不代表已有论文结果已经包含该对照实验。
-
-## 7. 阈值版本必须记录
-
-当前清理后代码默认值为：
-
-```text
-confirm_threshold = 0.72
-inspect_threshold = 0.52
-memory_update_threshold = 0.70
-candidate_margin = 0.06
-```
-
-现有实验资料中另有一组历史批次配置：
-
-```text
-confirm_threshold = 0.55
-inspect_threshold = 0.45
-memory_update_threshold = 0.55
-```
-
-两组参数不能混写。使用历史结果时，必须在实验记录中注明历史配置；使用当前代码进行新实验时，必须记录当前环境变量和 Git commit。
-
-## 8. 决策级数据采集
-
-数据采集不需要 Qwen 服务。从 `Code/` 目录执行：
-
-```bash
-cd /path/to/ReFindVLA/Carla_code/Code
-python3 -m collect_data_code.record_find_track_data \
-  --output-root /path/to/outputs/find_track_data \
+```powershell
+cd C:\path\to\ReFindVLA\Carla_code\Code
+python -m collect_data_code.record_find_track_data `
+  --output-root C:\path\to\outputs\find_track_data `
   --episodes 1
 ```
 
-采集器保存图像、目标框、状态和 `collection_profile.json`。它使用 CARLA 投影得到的仿真目标框，不是独立 YOLO 检测器，也不是独立 ReID 模型。
-
-## 9. 运行前检查
-
-提交或开始实验前，至少执行：
-
-```bash
-python3 -m compileall -q Code/main_interactive_track Code/collect_data_code Code/model_server.py
-python3 -c "import torch, transformers, peft, fastapi, uvicorn; print('server imports ok')"
-python3 -c "import numpy, requests, cv2; print('client imports ok')"
-```
-
-真正的 CARLA-Air、AirSim、Qwen GPU 和网络连通性只能在对应 Linux 机器上验证，不能用本地静态编译替代。
-
-## 10. 不应提交或误读的内容
-
-- 不提交完整 Qwen 基座权重；
-- 不提交服务器密码、令牌、私有路径和个人数据；
-- 不把旧版持续跟踪代码作为实验入口；
-- 不把 `vx/vy/vz/yaw_rate` 写成 Qwen 的输出；
-- 不把 CARLA 投影框写成真实视觉检测器或真实 ReID；
-- 不把本手册中的命令执行成功写成实验结果；
-- 新增无 VLA 对照实验之前，不在论文中报告其数值。
+默认背景车为 8。明确复现旧批次时才使用 `--traffic 10 --allow-unsafe-traffic`。目标框来自 CARLA 几何投影，不代表独立视觉检测器或独立 ReID 模型性能。

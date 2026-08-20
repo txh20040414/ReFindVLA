@@ -45,7 +45,7 @@ def observe_vehicle_candidates(
             bbox_meta = project_target_bbox_to_image(airsim_client, actor, config)
             if not bbox_meta.get("visible") or bbox_meta.get("bbox") is None:
                 continue
-            state = get_target_state(actor)
+            state = get_target_state(actor, config)
             bbox = tuple(bbox_meta["bbox"])
             area = max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
             candidates.append(
@@ -66,13 +66,15 @@ def observe_vehicle_candidates(
     return target_bbox, candidates[:max_candidates]
 
 
-def visible_target_observation(target_actor, target_bbox: Dict[str, Any]) -> Optional[TargetState]:
+def visible_target_observation(
+    target_actor, target_bbox: Dict[str, Any], config: Optional[RecoverVLAConfig] = None
+) -> Optional[TargetState]:
     """Return target state only when the target is visually observable."""
 
     if target_actor is None or not target_bbox.get("visible"):
         return None
     try:
-        observed = get_target_state(target_actor)
+        observed = get_target_state(target_actor, config)
         observed.source = "visible_oracle_projection"
         return observed
     except Exception:

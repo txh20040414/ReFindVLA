@@ -20,6 +20,9 @@ class RemoteVLAClient:
             resp = requests.get(f"{self.config.server_url}/health", timeout=10)
             resp.raise_for_status()
             info = resp.json()
+            if info.get("status") != "ok":
+                print(f"  推理服务器状态异常: {info}")
+                return False
             print(f"  已连接推理服务器: {info.get('model', 'unknown')}")
             print(f"  设备: {info.get('device', 'unknown')}")
             return True
@@ -39,7 +42,7 @@ class RemoteVLAClient:
             resp = requests.post(
                 f"{self.config.server_url}/predict",
                 json={"image_b64": image_b64, "user_text": user_text},
-                timeout=60,
+                timeout=self.config.remote_predict_timeout_s,
             )
             resp.raise_for_status()
             data = resp.json()

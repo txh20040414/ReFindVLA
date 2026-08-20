@@ -18,14 +18,14 @@
 | E3 | A* | 需使用已存在且可核对的基线实现 | 传统几何基线 |
 | E4 | 螺旋搜索 | 需使用已存在且可核对的基线实现 | 传统搜索基线 |
 
-当前仓库已经实现 E1 和 E2。经检查，当前 `Carla_code` 中没有可直接确认的独立 A* 或螺旋搜索实现；E3/E4 只有在队员提供实际脚本或实现后才能加入运行批次，不能用文档中的占位名称代替实验。
+当前仓库已经实现 E1/E2 的在线控制入口，并新增了原始日志汇总器；这不等于已经完成成批实验。当前 `Carla_code` 中没有可直接确认的独立 A* 或螺旋搜索实现；E3/E4 只有在队员提供实际脚本或实现后才能加入运行批次，不能用文档中的占位名称代替实验。
 
 ## 2. 固定系统拓扑
 
 本项目采用“本地 CARLA-Air + 远程 Linux GPU Qwen”拓扑：
 
 ```text
-本地 Windows/Linux 控制机
+本地 Windows 控制机
   CARLA-Air + CARLA 0.9.16 + AirSim 1.8.1
   Code/main_interactive_track
           │ HTTP POST /predict
@@ -47,11 +47,13 @@ Qwen 只返回高层结构化 JSON：`phase`、`view`、`target_found`、`confid
 - CARLA Python API：`0.9.16`；
 - AirSim Python API：`1.8.1`；
 - 地图：`Town10HD`；未经重新运行，不得把 Town3/Town5 写成已验证结果；
-- 默认背景交通数：`10`；
+- 默认背景交通数：`8`；官方 CARLA-Air UAV 场景建议不超过 8 辆。旧批次的 10 辆只有在显式设置 `RECOVER_ALLOW_UNSAFE_TRAFFIC=1` 后才能复现，并必须记录为 legacy/unsafe 配置；
 - 控制步长：`0.5 s`；
 - 高层决策间隔：`5.0 s`；
 - 当前代码默认最大步数：`240`；若为复现旧批次使用其他步数，必须在日志中单独标记；
-- 当前候选门控：确认阈值 `0.72`、检查阈值 `0.52`、记忆更新阈值 `0.70`、候选间隔 `0.06`。
+- 当前候选门控：确认阈值 `0.72`、检查阈值 `0.52`、记忆更新阈值 `0.70`、候选间隔 `0.06`；
+- 当前默认相机模式为静态 `settings.json`（`RECOVER_CAMERA_CONTROL=0`），避免 CARLA-Air Shipping 中可能导致原生崩溃的 `simSetCameraPose`；
+- 当前 Town10HD 坐标偏移默认 `(+172.20, -183.86, +27.45)`，但必须按地图/PlayerStart 在日志中记录来源，不能当作跨地图常数。
 
 ### 3.2 匹配场景原则
 
@@ -192,18 +194,13 @@ E3/E4 必须满足：
 
 ```text
 raw/
+  run_config.json
   decision.jsonl
-  control.jsonl（如果该批次生成）
-  episode_meta.json
-  environment_meta.json
   frames/（若启用）
-  run_config.txt
-  hardware.txt
-  command.txt
-summary.csv
+summary.csv（由 Code/tools/aggregate_experiment_runs.py 生成）
 ```
 
-`decision.jsonl` 中的时间戳、策略来源、候选分数、置信度、phase、waypoint 和远程推理时间必须保留。任何人工修改后的汇总表必须能够回溯到这些原始文件。
+`run_config.json`、`decision.jsonl` 中的时间戳、策略来源、候选分数、置信度、phase、waypoint 和远程推理时间必须保留。`Code/tools/aggregate_experiment_runs.py` 按每个 `decision.jsonl` 生成一个 episode/run 行；任何人工修改后的汇总表必须能够回溯到这些原始文件。
 
 ## 6. 指标与分析顺序
 

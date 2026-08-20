@@ -50,7 +50,11 @@ remote_required: true
 control_dt_s: 0.5
 decision_interval_s: 5.0
 max_steps: 240
-background_traffic: 10
+background_traffic: 8
+allow_unsafe_traffic: false
+camera_control_enabled: false
+coordinate_offset: [172.20, -183.86, 27.45]
+coordinate_offset_source: TBD
 confirm_threshold: 0.72
 inspect_threshold: 0.52
 memory_update_threshold: 0.70
@@ -75,11 +79,11 @@ remote_required: false
 每个 episode 的原始文件：
 
 ```text
-raw/<strategy>/<episode_id>/decision.jsonl
-raw/<strategy>/<episode_id>/episode_meta.json
-raw/<strategy>/<episode_id>/environment_meta.json
-raw/<strategy>/<episode_id>/command.txt
-raw/<strategy>/<episode_id>/hardware.txt
+<TRACKING_LOG_DIR>/recover_<timestamp>/run_config.json
+<TRACKING_LOG_DIR>/recover_<timestamp>/decision.jsonl
+<TRACKING_LOG_DIR>/recover_<timestamp>/frames/
+
+汇总文件由 `Code/tools/aggregate_experiment_runs.py` 生成；硬件、命令和 commit 仍需在批次记录中保存。
 ```
 
 ## 5. 批次汇总

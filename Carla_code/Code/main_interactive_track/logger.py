@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -14,7 +15,8 @@ from .models import DecisionPlan
 
 class RunLogger:
     def __init__(self, root_dir: str):
-        self.run_dir = os.path.abspath(os.path.join(root_dir, f"recover_{time.strftime('%Y%m%d_%H%M%S')}"))
+        run_name = f"recover_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000:06d}"
+        self.run_dir = os.path.abspath(os.path.join(root_dir, run_name))
         self.frames_dir = os.path.join(self.run_dir, "frames")
         os.makedirs(self.frames_dir, exist_ok=True)
         self.jsonl_path = os.path.join(self.run_dir, "decision.jsonl")
@@ -23,8 +25,27 @@ class RunLogger:
         print(f"  图像: {self.frames_dir}")
 
     def write(self, row: Dict[str, Any]) -> None:
+        row = dict(row)
+        row.setdefault("timestamp", time.time())
         self._fp.write(json.dumps(row, ensure_ascii=False) + "\n")
         self._fp.flush()
+
+    def write_metadata(self, metadata: Dict[str, Any]) -> str:
+        """Persist immutable run metadata next to the raw JSONL stream."""
+        path = os.path.join(self.run_dir, "run_config.json")
+
+        def serializable(value):
+            if is_dataclass(value):
+                return asdict(value)
+            if isinstance(value, dict):
+                return {str(k): serializable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [serializable(v) for v in value]
+            return value
+
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(serializable(metadata), fp, ensure_ascii=False, indent=2)
+        return path
 
     def close(self) -> None:
         self._fp.close()

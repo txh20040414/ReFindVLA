@@ -58,6 +58,8 @@ export RECOVER_USE_REMOTE_VLA=1
 - `controller.py`：语义航点到 AirSim body-frame 控制量；
 - `logger.py`：决策、控制和帧日志；
 - `model_server.py`：Qwen2.5-VL + ReFindVLA LoRA HTTP 服务。
+- `tools/validate_experiment_setup.py`：本地 CARLA/AirSim 端口、远程 `/health` 和客户端依赖预检；
+- `tools/aggregate_experiment_runs.py`：按 episode/run 汇总原始 JSONL，不把控制循环当作统计样本。
 
 ## 决策级数据采集
 
