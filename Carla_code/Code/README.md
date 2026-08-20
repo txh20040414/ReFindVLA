@@ -73,3 +73,10 @@ python3 -m collect_data_code.record_find_track_data \
 ## 参数和实验协议
 
 所有运行参数都可以通过环境变量覆盖，主要参数定义在 `main_interactive_track/config.py`。特别是确认阈值、检查阈值、记忆更新阈值和候选间隔必须与所报告的实验批次保持一致。历史实验记录和当前代码默认值不是同一版本时，必须在实验日志中明确标注，不能混用。
+
+本轮返修实验文档：
+
+- [`docs/EXPERIMENT_DESIGN_ROUTE.md`](../docs/EXPERIMENT_DESIGN_ROUTE.md)：完整系统、严格 no-VLA、A* 和螺旋搜索的统一实验路线；
+- [`docs/REVIEW_ISSUES_EVIDENCE_MATRIX.md`](../docs/REVIEW_ISSUES_EVIDENCE_MATRIX.md)：审稿问题、代码证据、论文处理和实验状态矩阵；
+- [`docs/EXPERIMENT_LOG_TEMPLATE.md`](../docs/EXPERIMENT_LOG_TEMPLATE.md)：批次和 episode 原始记录模板；
+- [`docs/LINUX_GPU_VLA_EXPERIMENT.md`](../docs/LINUX_GPU_VLA_EXPERIMENT.md)：本地 CARLA-Air 与远程 Linux Qwen 服务的操作手册。
